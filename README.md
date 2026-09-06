@@ -1,5 +1,7 @@
 # display360
 
+[日本語](README.ja.md)
+
 My monitor does 360 Hz. macOS insisted on 300. This is how I got the last 60 Hz back without buying anything.
 
 Short version: the Mac's display coprocessor (the DCP) throws away the monitor's own 360 Hz timing. So I hand it a slightly edited EDID through a couple of private IOKit calls and make it rebuild its timing table. After that, 360 Hz is just another entry in System Settings. A tiny LaunchAgent re-does the trick whenever the monitor reconnects.
@@ -147,4 +149,4 @@ If your monitor's high-rate timing is in a Type VII block or a CTA DTD instead, 
 
 ## License
 
-MIT. There's a longer Japanese write-up of the investigation in [README.ja.md](README.ja.md).
+MIT.
