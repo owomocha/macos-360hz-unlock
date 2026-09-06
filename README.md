@@ -18,6 +18,20 @@ Setup: MacBook Pro 16" M2 Pro (Mac14,10), macOS 26.5.2, Pixio PX259PS over USB-C
 
 Fair warning: this pokes undocumented IOKit functions (`IOAVService*`, `IODP*`) and drives the panel a little outside its stock timing. It's been running on my machine since the end of August with no drama, but it's a hack. Read [Caveats](#caveats) before you run it.
 
+## Scope: what's general, what's hardcoded
+
+The name is only because my monitor went from 300 to 360. The actual trick is "make the DCP accept a timing it threw away", and nothing about it is specific to 360 Hz. What *is* specific to my setup is the tool as it stands today:
+
+| | general? | as of now |
+|---|---|---|
+| the technique (virtual EDID + `IODPDeviceSetUpdated`) | yes | should apply to any DisplayPort monitor hanging off an Apple Silicon DCP |
+| `vedid info` / `set` / `devupd` / `clear` | yes | work on whatever external display is connected |
+| `vedid daemon` | no | checks for the PX259PS's manufacturer/product ID (`430f/0025`) and looks for a 1920-wide mode above 355 Hz |
+| `build_edid2.py` | no | assumes a DisplayID Type I block and emits four 1920x1080 candidates around 360 Hz with fixed sync widths |
+| `set360.py` / `check.py` | no | filter on width 1920 and rate > 355 |
+
+Whether it helps with *your* monitor depends on why macOS rejects the mode in the first place. If it's the blanking-time rule described below, a regenerated EDID has a real chance. If the mode is missing because the link can't carry it (bandwidth, no DSC), no EDID trick will fix that. Verified on exactly one monitor over USB-C DisplayPort; HDMI untested. Making the tool itself generic (target rate and resolution as arguments, monitor ID read from the injected EDID) is the obvious next step.
+
 ## What's actually going on
 
 The PX259PS advertises 1920x1080 @ 360 Hz right in its EDID (a DisplayID Type I block). You can even watch the DCP consider it: it sits in `PreferredTimingElements` with the highest score of anything in the list (16846, vs 15922 for 300 Hz) and an empty `UnsafeColorElementIDs`. And then it's simply not in `TimingElements`, the table macOS actually uses. No public API lets you add a mode the DCP has dropped, and the old `/Library/Displays/.../DisplayProductID-xxxx` override trick doesn't reach the DCP at all anymore. All it did on my system was rename the display.
