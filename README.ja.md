@@ -1,8 +1,8 @@
 # display360
 
-[English](README.md)
+[English](README.md) · [![ci](https://github.com/owomocha/display360/actions/workflows/ci.yml/badge.svg)](https://github.com/owomocha/display360/actions)
 
-手持ちのモニタは 360Hz 対応。なのに macOS は 300Hz までしか出してくれない。残りの 60Hz を、何も買わずに取り返した話です。
+手持ちのモニタは 360Hz 対応。なのに macOS は 300Hz までしか出してくれない。残りの 60Hz を何も買わずに取り返した話と、その過程でできた道具です。モニタの EDID と欲しいリフレッシュレートを渡すと、macOS が捨てていたタイミングを受け入れさせます。
 
 ざっくり言うと、Mac のディスプレイ用コプロセッサ（DCP）が、モニタの EDID に入っている 360Hz のタイミングを捨てているのが原因でした。なので、少しだけ書き換えた EDID を非公開の IOKit API 経由で DCP に渡して、タイミング表を作り直させます。これで 360Hz が「システム設定」の選択肢に普通に出てきます。抜き差しや再起動で消えるので、小さな常駐エージェントが毎回入れ直します。
 
@@ -14,23 +14,20 @@ vsync 実計数   : 359.9977 Hz   (5.000 秒で 1801 フレーム・CVDisplayLin
 フレーム間隔   : 中央値 2.7775 ms
 ```
 
-環境は MacBook Pro 16" M2 Pro (Mac14,10)、macOS 26.5.2、Pixio PX259PS を USB-C（DP alt mode）で接続。別のモニタで使いたい場合は「[他のモニタで使う](#他のモニタで使う)」を見てください。EDID を作り直して定数を 1 か所変えるだけですが、タイミングの検討は自分でやることになります。
+環境は MacBook Pro 16" M2 Pro (Mac14,10)、macOS 26.5.2、Pixio PX259PS を USB-C（DP alt mode）で接続。
 
 先に断っておくと、これは非公開の IOKit 関数（`IOAVService*` と `IODP*`）を叩いていて、パネルを規定よりわずかに速いタイミングで駆動しています。8 月末からずっと使っていて問題は出ていませんが、ハックであることに変わりはないので、[注意点](#注意点)を読んでから試してください。
 
 ## 対応範囲
 
-名前が 360 なのは、うちのモニタが 300 から 360 になったからというだけです。やっていることは「DCP が捨てたタイミングを受け入れさせる」で、360Hz に固有の部分はありません。うちの環境に固有なのは、今のツールの中身のほうです。
+名前が 360 なのは、うちのモニタが 300 から 360 になったからというだけです。ツールの中に 360Hz 固有の部分はありません。`build_edid.py` は欲しい解像度とレートを引数で受け取り、デーモンも引数で受け取ります。デーモンはモニタの製造者/製品 ID を渡された EDID から読むので、その EDID 用でないモニタには手を出しません。
 
-| | 汎用か | 今の状態 |
-|---|---|---|
-| 手法（仮想 EDID と `IODPDeviceSetUpdated`） | 汎用 | Apple Silicon の DCP に DisplayPort で繋がるモニタなら同じ呼び出しで通るはず |
-| `vedid info` / `set` / `devupd` / `clear` | 汎用 | 繋がっている外部ディスプレイが対象 |
-| `vedid daemon` | 固定 | PX259PS の製造者/製品 ID（`430f/0025`）を照合し、幅 1920 で 355Hz 超のモードを探す |
-| `build_edid2.py` | 固定 | DisplayID Type I ブロック前提。1920x1080 の約 360Hz を 4 本、同期幅も固定 |
-| `set360.py` / `check.py` | 固定 | 幅 1920 とレート 355 超で絞り込み |
+それでも前提にしていることがあります。
 
-あなたのモニタで効くかどうかは、macOS がそのモードを蹴っている理由次第です。下で説明するブランキング時間の規則が原因なら、EDID を作り直せば通る見込みがあります。リンクの帯域が足りない、DSC が無い、といった理由で出てこないモードは、EDID をいじっても出ません。検証したのは USB-C の DisplayPort で繋いだモニタ 1 台だけで、HDMI は未検証。ツール自体を汎用化する（目標のレートと解像度を引数で渡す、モニタの ID は注入する EDID から読む）のが次にやることです。
+- Apple Silicon（タイミング表を持っているのが DCP なので）と DisplayPort 接続（USB-C alt mode か Thunderbolt）。HDMI は未検証。
+- モニタがタイミングを DisplayID Type I ブロックに持っていること。`build_edid.py` が書き換えるのはそこです。Type VII ブロックや CTA の DTD にある場合はまだ扱えないので、EDID を添えて issue を立ててください。
+- macOS がそのモードを蹴っている理由が、下で説明するブランキング時間の規則であること。リンクの帯域が足りない、DSC が無い、といった理由で出てこないモードは、EDID をいじっても出ません。
+- 検証したのはモニタ 1 台。それ以外は、その 1 台で DCP がどう振る舞ったかからの外挿です。別のモニタで試したら結果を教えてもらえると嬉しいです。
 
 ## 何が起きているのか
 
@@ -89,47 +86,45 @@ IODPDeviceSetUpdated(dp, 1);                  // 再パースしてタイミン�
 
 ## 使い方
 
-Apple Silicon の Mac、`clang`（Xcode Command Line Tools）、それと補助スクリプト用に PyObjC の Quartz が入った Python 3（`pip install pyobjc-framework-Quartz`）が要ります。
+Apple Silicon の Mac、Xcode Command Line Tools（`clang` と `make`）、それと切替と計測のスクリプト用に PyObjC の Quartz が入った Python 3（`pip install pyobjc-framework-Quartz`）が要ります。生成器と解析器は素の Python で動きます。
 
 ```sh
 git clone https://github.com/owomocha/display360 && cd display360
-clang -O2 -o vedid vedid.c -framework IOKit -framework CoreFoundation -framework CoreGraphics
+make                                              # vedid をビルド
 
-./vedid info              # 配線上の EDID と AV サービスのプロパティを表示するだけ（読み取り専用）
-python3 build_edid2.py    # edid.hex（純正）→ edid_v2.hex（純正 + 候補 4 本）
-./enable360.sh            # 注入 → 再構築 → 360Hz に切替 → 5 秒間 vsync を数える
-python3 check.py          # 今 360Hz が DCP の使用可能表にあるか、CoreGraphics に見えているか
+./vedid edid > edid/mine.hex                      # モニタの純正 EDID を 1 行の hex で保存（読み取り専用）
+python3 parse_edid.py edid/mine.hex               # 何が申告されていて、目当てのタイミングがどこにあるか
+python3 build_edid.py edid/mine.hex --rate 360    # -> edid/mine-360.hex と、候補の一覧表
+./enable.sh edid/mine-360.hex 1920 360            # 注入 → 再構築 → 切替 → 5 秒間 vsync を数える
+python3 check.py --rate 360                       # 今 360Hz が DCP の使用可能表にあるか、CoreGraphics に見えているか
 ```
 
-`edid.hex` は手元の PX259PS の純正 EDID（シリアル番号は入っていません。確認済み）、`edid_v2.hex` は生成済みのものなので、同じモニタなら `enable360.sh` から始められます。
+解像度やレートが違うなら `build_edid.py edid/mine.hex --rate 240 --width 2560 --height 1440` のように指定します。既定の候補は、うちで通った 4 組のブランキング（`--blanking 200x80,216x90,160x80,160x64`、hblank x vblank。先頭が preferred になる）。生成器は候補ごとの垂直ブランキング時間を表示して、DCP が受理したのを見た最短の 155µs を下回るものに印を付けます。ピクセルクロックの上限は EDID 自身の Range Limits から読みます（`--force` で無視）。
 
-戻すには、システム設定で 300Hz を選ぶか、`python3 set360.py revert`、あるいはケーブルを抜けば OK。仮想 EDID は抜き差しで消えます。それが次の節がある理由です。
+`edid/pixio-px259ps.hex` は手元の PX259PS の純正 EDID（シリアル番号は入っていません。確認済み）、`edid/pixio-px259ps-360.hex` は生成器がそれから作ったものです。`enable.sh` と `install.sh` の既定値もこの 2 つなので、同じモニタなら引数なしで動きます。
+
+戻すには、システム設定で元のレートを選ぶか、`python3 setmode.py revert --rate 300`、あるいはケーブルを抜けば OK。仮想 EDID は抜き差しで消えます。それが次の節がある理由です。
 
 ### ずっと有効にしておく
 
 ```sh
-./install.sh      # 必要なら vedid をビルドし、~/Library/LaunchAgents/com.local.display360.plist を書いて起動
-./uninstall.sh    # 停止して削除（sudo 不要）
+./install.sh edid/mine-360.hex 1920 360    # 必要なら vedid をビルドし、~/Library/LaunchAgents/com.local.display360.plist を書いて起動
+./uninstall.sh                             # 停止して削除（sudo 不要）
 ```
 
-`vedid daemon` は `DCPAVServiceProxy` の IOKit マッチング通知を待っていて、ディスプレイが接続されたら注入・再構築・切替を行います。30 秒ごとに 360Hz モードがまだあるかも見ていて、消えていた時だけ入れ直します（スリープ復帰で消えます）。勝手に張り合わないようにもしてあって、360 が選べる状態であなたが 300 を選んでいるなら、次の抜き差しまでそっとしておきます。それと EDID の製造者/製品 ID（`430f/0025`）を先に見るので、別のモニタを挿しても何もしません。
+`vedid daemon <edid> <width> <rate>` は `DCPAVServiceProxy` の IOKit マッチング通知を待っていて、ディスプレイが接続されたら注入・再構築・切替を行い、幅 `<width>` で `<rate>` Hz のモードに合わせます。30 秒ごとにモードがまだあるかも見ていて、消えていた時だけ入れ直します（スリープ復帰で消えます）。勝手に張り合わないようにもしてあって、目当てのモードが選べる状態であなたが別のレートを選んでいるなら、次の抜き差しまでそっとしておきます。モニタの製造者/製品 ID は渡された EDID の 8〜11 バイト目と照合するので、別のモニタを挿しても何もしません。
 
 ログはバイナリと同じ場所の `display360.log`、状態は `launchctl print gui/$(id -u)/com.local.display360` で見られます。
 
-## 他のモニタで使う
+## 候補が出てこないとき
 
-1. `./vedid info` で EDID を取り、`edid.hex` として保存する。
-2. `python3 parse_edid.py edid.hex` で、何が申告されていて目当てのタイミングがどこにあるか（DisplayID Type I / Type VII、CTA DTD）を見る。`build_edid2.py` は DisplayID Type I ブロック前提なので、`CANDS` を自分の解像度とレートに合わせて書き換える。vblank は 155µs より余裕を持って長く（175µs 以上は実績あり）。
-3. `vedid.c` の `PIXIO_ID`（EDID の 8〜11 バイト目）と `find_target` のモード絞り込み（今は幅 1920・レート 355 超）を合わせてビルドし直す。
-4. `python3 timings.py 100` で DCP の候補表と使用可能表を並べて出せます。自分の候補がどれだけ通ったか一目で分かるので、これが一番速いフィードバックループでした。
-
-高レートのタイミングが Type VII ブロックや CTA の DTD にあるモニタだと、生成器に少し手を入れる必要があります。PR 歓迎です。EDID を添えて issue を立ててもらえれば見ます。
+`python3 timings.py 100` で DCP の候補表と使用可能表を並べて出せます。候補ごとに `[usable]` か `[dropped]` が付くので、どれが通ったか一目で分かります。これが一番速いフィードバックループでした。全部落ちるならブランキングを太らせる（`--blanking 240x100,200x80`）。候補表にすら出てこないなら注入自体が効いていないので、`display360.log` を見て、上のホットプラグの注意も読んでください。
 
 ## 注意点
 
 - **非公開 API。** `IOAVService*` と `IODP*` はどれも文書化されていません。macOS のアップデートで黙って壊れる可能性があります。`cgs_modes.py` も隠しモードを列挙するのに非公開の `CGSGetDisplayModeDescriptionOfLength` を使っています。
-- **少しだけ規定外。** 候補 A はピクセルクロック 885.31MHz で、モニタ自身の 360Hz タイミングより 7.5% 高く、水平周波数 417.6kHz も 4.5% 高い。EDID が申告する上限 900MHz の内側で、手元では問題なしですが、ちらつくようなら `CANDS` を D（856.63MHz）だけにしてください。
-- **揮発する。** 再起動、抜き差し、スリープ。どれでも仮想 EDID は消えます。ログイン画面（セッションに入る前）は 300Hz のまま。
+- **少しだけ規定外。** 候補 A はうちのパネルをピクセルクロック 885.31MHz で駆動していて、モニタ自身の 360Hz タイミングより 7.5% 高く、水平周波数 417.6kHz も 4.5% 高い。EDID が申告する上限 900MHz の内側で、手元では問題なしですが、ちらつくようなら控えめな候補 1 本にしてください（`--blanking 160x64`、D の 856.63MHz）。
+- **揮発する。** 再起動、抜き差し、スリープ。どれでも仮想 EDID は消えます。ログイン画面（セッションに入る前）は元のレートのまま。
 - **SIP。** 別件の都合で SIP を切った状態で作りました。その環境では一般ユーザー権限で動いています。SIP 有効では未検証。IOKit のユーザークライアントには届くはずだと思っていますが、確認していない推測です。
 - **画面が真っ暗になったら**: `./vedid hpd` で外部コントローラにホットプラグを強制すると、配線上の EDID で復帰します。ケーブルの抜き差しでも同じ。システムに書き込むものはホームディレクトリの LaunchAgent plist 以外にありません。
 
@@ -137,19 +132,21 @@ python3 check.py          # 今 360Hz が DCP の使用可能表にあるか、C
 
 | | |
 |---|---|
-| `vedid.c` | 本体。EDID 注入、DP デバイス/ポート操作、ホットプラグ、常駐 |
-| `edid.hex` | PX259PS の純正 EDID（生成器が読むので残しておく） |
-| `edid_v2.hex` | 候補 4 本入りの生成済み EDID。ブロック 0/1 は無改変 |
-| `build_edid2.py` | 生成器。DisplayID Type I ブロックを書き換えて両チェックサムを計算し直す |
-| `enable360.sh` | 注入 → 再構築 → 切替 → 計測 |
-| `set360.py` | 360Hz モードの一覧と選択、vsync の実計数。`revert` で 300Hz に戻す |
+| `vedid.c` | 本体。EDID の取得と注入、DP デバイス/ポート操作、ホットプラグ、常駐 |
+| `build_edid.py` | 生成器。DisplayID Type I ブロックを書き換えて両チェックサムを計算し直す |
+| `parse_edid.py` | EDID の全ブロックを解読（base、CTA-861、DisplayID） |
+| `enable.sh` | 注入 → 再構築 → 切替 → 計測 |
+| `setmode.py` | 目当てのモードの一覧と選択、vsync の実計数。`revert` で戻す |
 | `check.py` | 現状を 1 発で判定。`--set` で切替と計測まで |
 | `timings.py` | DCP の候補表と使用可能表を並べて表示 |
-| `parse_edid.py` | EDID の全ブロックを解読（base、CTA-861、DisplayID） |
 | `cgs_modes.py` | 非公開の CGS API で隠しモードまで全部列挙 |
 | `install.sh` / `uninstall.sh` | LaunchAgent の導入と撤去 |
+| `edid/` | うちのモニタの純正 EDID と、生成したもの |
+| `tests/` | 生成器が同梱の EDID をバイト単位で再現できること、ほか境界のテスト（`make test`） |
 
-`vedid` のサブコマンド: `info`、`set <hex>`、`clear`、`devupd [n]`、`ports`、`pset <hex>`、`hpd`、`daemon [hex]`。ソースの冒頭に一行ずつ説明があります。
+`vedid` のサブコマンド: `info`、`edid`、`set <hex>`、`clear`、`devupd [n]`、`ports`、`pset <hex>`、`hpd`、`daemon <hex> [width] [rate]`。ソースの冒頭に一行ずつ説明があります。
+
+CI は macOS のランナーでビルドとテストを回します。注入そのものは試せません。実機とモニタが要るので。
 
 ## ハマったところ
 

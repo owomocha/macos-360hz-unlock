@@ -1,0 +1,23 @@
+name: ci
+on:
+  push:
+  pull_request:
+jobs:
+  macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: build vedid
+        run: make
+      - name: tests
+        run: make test
+      - name: scripts compile
+        run: python3 -m py_compile build_edid.py parse_edid.py timings.py check.py setmode.py cgs_modes.py
+      - name: decode the shipped EDIDs
+        run: |
+          python3 parse_edid.py edid/pixio-px259ps.hex
+          python3 parse_edid.py edid/pixio-px259ps-360.hex
+      - name: shell scripts
+        run: |
+          sh -n install.sh enable.sh uninstall.sh
+          ./install.sh --print > /dev/null

@@ -6,7 +6,5 @@ vedid
 __pycache__/
 *.pyc
 .DS_Store
-# superseded first attempts, kept locally only (hard-coded temp paths, pre-fix generator)
-build_edid.py
-parse2.py
-edid_360.hex
+# local scratch: old versions and backups
+_old/

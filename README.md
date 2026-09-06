@@ -1,8 +1,8 @@
 # display360
 
-[日本語](README.ja.md)
+[日本語](README.ja.md) · [![ci](https://github.com/owomocha/display360/actions/workflows/ci.yml/badge.svg)](https://github.com/owomocha/display360/actions)
 
-My monitor does 360 Hz. macOS insisted on 300. This is how I got the last 60 Hz back without buying anything.
+My monitor does 360 Hz. macOS insisted on 300. This is how I got the last 60 Hz back without buying anything, and the tool that came out of it: give it your monitor's EDID and the refresh rate you want, and it makes the Mac accept a timing it would otherwise throw away.
 
 Short version: the Mac's display coprocessor (the DCP) throws away the monitor's own 360 Hz timing. So I hand it a slightly edited EDID through a couple of private IOKit calls and make it rebuild its timing table. After that, 360 Hz is just another entry in System Settings. A tiny LaunchAgent re-does the trick whenever the monitor reconnects.
 
@@ -14,23 +14,20 @@ vsync counted   : 359.9977 Hz   (1801 frames in 5.000 s, CVDisplayLink callback)
 frame interval  : median 2.7775 ms
 ```
 
-Setup: MacBook Pro 16" M2 Pro (Mac14,10), macOS 26.5.2, Pixio PX259PS over USB-C (DP alt mode). Different monitor? See [Other monitors](#other-monitors). It's mostly "regenerate the EDID and change one constant", but you'll be doing your own homework on the timing.
+Setup: MacBook Pro 16" M2 Pro (Mac14,10), macOS 26.5.2, Pixio PX259PS over USB-C (DP alt mode).
 
 Fair warning: this pokes undocumented IOKit functions (`IOAVService*`, `IODP*`) and drives the panel a little outside its stock timing. It's been running on my machine since the end of August with no drama, but it's a hack. Read [Caveats](#caveats) before you run it.
 
-## Scope: what's general, what's hardcoded
+## Scope
 
-The name is only because my monitor went from 300 to 360. The actual trick is "make the DCP accept a timing it threw away", and nothing about it is specific to 360 Hz. What *is* specific to my setup is the tool as it stands today:
+The name is only because my monitor went from 300 to 360. Nothing in the tool is specific to that: `build_edid.py` takes the resolution and rate you want, and the daemon takes them as arguments and reads the monitor's manufacturer/product ID from the EDID you give it, so it never touches a monitor the EDID wasn't made for.
 
-| | general? | as of now |
-|---|---|---|
-| the technique (virtual EDID + `IODPDeviceSetUpdated`) | yes | should apply to any DisplayPort monitor hanging off an Apple Silicon DCP |
-| `vedid info` / `set` / `devupd` / `clear` | yes | work on whatever external display is connected |
-| `vedid daemon` | no | checks for the PX259PS's manufacturer/product ID (`430f/0025`) and looks for a 1920-wide mode above 355 Hz |
-| `build_edid2.py` | no | assumes a DisplayID Type I block and emits four 1920x1080 candidates around 360 Hz with fixed sync widths |
-| `set360.py` / `check.py` | no | filter on width 1920 and rate > 355 |
+What it still assumes:
 
-Whether it helps with *your* monitor depends on why macOS rejects the mode in the first place. If it's the blanking-time rule described below, a regenerated EDID has a real chance. If the mode is missing because the link can't carry it (bandwidth, no DSC), no EDID trick will fix that. Verified on exactly one monitor over USB-C DisplayPort; HDMI untested. Making the tool itself generic (target rate and resolution as arguments, monitor ID read from the injected EDID) is the obvious next step.
+- Apple Silicon (the DCP is where the timing table lives) and a DisplayPort link (USB-C alt mode or Thunderbolt). HDMI is untested.
+- The monitor keeps its timings in a DisplayID Type I block. That's what `build_edid.py` rewrites. Type VII blocks and CTA DTDs aren't handled yet; open an issue with your EDID if that's what you have.
+- macOS is rejecting the mode because of the blanking-time rule below. If the mode is missing because the link can't carry it (bandwidth, no DSC), no EDID trick will fix that.
+- One monitor verified. Everything else is extrapolation from how the DCP behaved with that one, so if you try it on something else, I'd like to hear how it went.
 
 ## What's actually going on
 
@@ -89,49 +86,45 @@ That last one takes three out-pointers. I called it with one at first. Instant s
 
 ## Using it
 
-You need an Apple Silicon Mac, `clang` (Xcode command line tools), and Python 3 with PyObjC's Quartz bindings for the helper scripts (`pip install pyobjc-framework-Quartz`).
+You need an Apple Silicon Mac, Xcode command line tools (`clang`, `make`), and Python 3 with PyObjC's Quartz bindings for the switching and measuring scripts (`pip install pyobjc-framework-Quartz`). The generator and the parser are plain Python.
 
 ```sh
 git clone https://github.com/owomocha/display360 && cd display360
-clang -O2 -o vedid vedid.c -framework IOKit -framework CoreFoundation -framework CoreGraphics
+make                                              # builds vedid
 
-./vedid info              # dumps the wired EDID and the AV service properties, read-only
-python3 build_edid2.py    # edid.hex (stock) -> edid_v2.hex (stock + the four candidates)
-./enable360.sh            # inject, rebuild, switch to 360, count vsyncs for 5 seconds
-python3 check.py          # is 360 in the DCP's usable table? in CoreGraphics? right now
+./vedid edid > edid/mine.hex                      # your monitor's stock EDID as one hex line (read-only)
+python3 parse_edid.py edid/mine.hex               # what it advertises, and where the timing you want lives
+python3 build_edid.py edid/mine.hex --rate 360    # -> edid/mine-360.hex, plus a table of the candidates
+./enable.sh edid/mine-360.hex 1920 360            # inject, rebuild, switch, count vsyncs for 5 seconds
+python3 check.py --rate 360                       # is a 360 Hz mode in the DCP's usable table? in CoreGraphics?
 ```
 
-`edid.hex` is my PX259PS's stock EDID (no serial number in there, I checked) and `edid_v2.hex` is the generated one, so if you have the same monitor you can go straight to `enable360.sh`.
+For another resolution or rate: `build_edid.py edid/mine.hex --rate 240 --width 2560 --height 1440`. The default candidates are the four blanking pairs that worked for me (`--blanking 200x80,216x90,160x80,160x64`, hblank x vblank; the first one becomes the preferred timing). The generator prints each candidate's vertical blanking time and flags anything under 155 µs, the lowest I've seen the DCP accept. The pixel-clock ceiling comes from your EDID's own range-limits descriptor (`--force` to ignore it).
 
-To undo: pick 300 Hz in System Settings, or `python3 set360.py revert`, or unplug the cable. The virtual EDID doesn't survive a replug, which is the whole reason the next section exists.
+`edid/pixio-px259ps.hex` is my PX259PS's stock EDID (no serial number in there, I checked) and `edid/pixio-px259ps-360.hex` is what the generator makes from it. Those are also the defaults of `enable.sh` and `install.sh`, so with the same monitor you can run them with no arguments.
+
+To undo: pick the old rate in System Settings, `python3 setmode.py revert --rate 300`, or unplug the cable. The virtual EDID doesn't survive a replug, which is the whole reason the next section exists.
 
 ### Keeping it on
 
 ```sh
-./install.sh      # builds vedid if needed, writes ~/Library/LaunchAgents/com.local.display360.plist, starts it
-./uninstall.sh    # stops and removes it, no sudo
+./install.sh edid/mine-360.hex 1920 360    # builds vedid if needed, writes ~/Library/LaunchAgents/com.local.display360.plist, starts it
+./uninstall.sh                             # stops and removes it, no sudo
 ```
 
-`vedid daemon` sits on an IOKit matching notification for `DCPAVServiceProxy`, so it fires when a display connects: inject, rebuild, switch. It also wakes up every 30 seconds to check the 360 Hz mode still exists and re-injects only if it's gone (sleep/wake eats it). It deliberately won't fight you: if 360 is available and you picked 300 yourself, it leaves that alone until the next replug. And it checks the EDID manufacturer/product ID (`430f/0025`) first, so plugging in some other monitor does nothing.
+`vedid daemon <edid> <width> <rate>` sits on an IOKit matching notification for `DCPAVServiceProxy`, so it fires when a display connects: inject, rebuild, switch to the `<width>`-wide mode at `<rate>` Hz. It also wakes up every 30 seconds to check the mode still exists and re-injects only if it's gone (sleep/wake eats it). It deliberately won't fight you: if the mode is available and you picked another rate yourself, it leaves that alone until the next replug. And it compares the monitor's manufacturer/product ID with bytes 8 to 11 of the EDID it was given, so plugging in some other monitor does nothing.
 
 Log is `display360.log` next to the binary; `launchctl print gui/$(id -u)/com.local.display360` for status.
 
-The tools print in Japanese at the moment. I'll get to an English pass.
+## If your candidates don't show up
 
-## Other monitors
-
-1. `./vedid info`, save the EDID dump as `edid.hex`.
-2. `python3 parse_edid.py edid.hex` to see what it advertises and where the timing lives (DisplayID Type I / Type VII, CTA DTD). `build_edid2.py` assumes a DisplayID Type I block; edit `CANDS` for your resolution and rate, and keep the vblank comfortably above 155 µs (175+ is known good).
-3. Change `PIXIO_ID` in `vedid.c` (EDID bytes 8 to 11) and the mode filter in `find_target` (currently width 1920, rate > 355). Rebuild.
-4. `python3 timings.py 100` prints the DCP's candidate table next to its usable table and marks which of your candidates made it. Fastest feedback loop I found.
-
-If your monitor's high-rate timing is in a Type VII block or a CTA DTD instead, the generator needs a bit of work. PRs welcome, or open an issue with your EDID and I'll take a look.
+`python3 timings.py 100` prints the DCP's candidate table next to its usable table and marks each candidate `[usable]` or `[dropped]`. That's the fastest feedback loop I found. If everything is dropped, try fatter blanking (`--blanking 240x100,200x80`). If nothing even appears as a candidate, the injection didn't take: check `display360.log`, and read the hot-plug warning above.
 
 ## Caveats
 
 - **Private APIs.** Everything under `IOAVService*` / `IODP*` is undocumented. Any macOS update can break it without a word. `cgs_modes.py` also uses the private `CGSGetDisplayModeDescriptionOfLength` to list hidden modes.
-- **Slightly out of spec.** Candidate A runs the panel at 885.31 MHz pixel clock, 7.5 % above its own 360 Hz timing, and 417.6 kHz horizontal (+4.5 %). That's still inside the 900 MHz the EDID declares as its max, and mine has been fine, but if yours flickers, keep only D (856.63 MHz) in `CANDS`.
-- **Volatile.** Reboot, replug, sleep: all of them clear the virtual EDID. The login window (before your session) stays at 300.
+- **Slightly out of spec.** Candidate A runs my panel at 885.31 MHz pixel clock, 7.5 % above its own 360 Hz timing, and 417.6 kHz horizontal (+4.5 %). That's still inside the 900 MHz the EDID declares as its max, and mine has been fine, but if yours flickers, use a single conservative candidate (`--blanking 160x64`, which is D at 856.63 MHz).
+- **Volatile.** Reboot, replug, sleep: all of them clear the virtual EDID. The login window (before your session) stays at the stock rate.
 - **SIP.** I developed this with SIP off for unrelated reasons. It runs as a normal user there. I haven't tested it with SIP on; I'd expect the IOKit user clients to still be reachable, but that's a guess, not a fact.
 - **If the screen goes black:** `./vedid hpd` forces a hot-plug on the external controller, which brings the display back with its wired EDID. Or unplug and replug. Nothing here touches the system outside the LaunchAgent plist in your home directory.
 
@@ -139,19 +132,21 @@ If your monitor's high-rate timing is in a Type VII block or a CTA DTD instead, 
 
 | | |
 |---|---|
-| `vedid.c` | the tool: EDID injection, DP device/port calls, hot-plug, daemon |
-| `edid.hex` | stock PX259PS EDID (the generator reads it, keep it) |
-| `edid_v2.hex` | generated EDID with the four candidates, blocks 0/1 untouched |
-| `build_edid2.py` | the generator: rewrites the DisplayID Type I block, redoes both checksums |
-| `enable360.sh` | inject → rebuild → switch → measure |
-| `set360.py` | list/select a 360 mode and count real vsyncs; `revert` goes back to 300 |
+| `vedid.c` | the tool: EDID dump and injection, DP device/port calls, hot-plug, daemon |
+| `build_edid.py` | the generator: rewrites the DisplayID Type I block, recomputes both checksums |
+| `parse_edid.py` | decode every EDID block (base, CTA-861, DisplayID) |
+| `enable.sh` | inject → rebuild → switch → measure |
+| `setmode.py` | list or select the target mode and count real vsyncs; `revert` goes back |
 | `check.py` | one-shot status; `--set` also switches and measures |
 | `timings.py` | DCP candidate table vs usable table, side by side |
-| `parse_edid.py` | decode all EDID blocks (base, CTA-861, DisplayID) |
 | `cgs_modes.py` | every display mode via the private CGS API, hidden ones included |
 | `install.sh` / `uninstall.sh` | LaunchAgent on/off |
+| `edid/` | my monitor's stock EDID and the generated one |
+| `tests/` | the generator has to reproduce the shipped EDID byte for byte, plus the edge cases (`make test`) |
 
-`vedid` subcommands: `info`, `set <hex>`, `clear`, `devupd [n]`, `ports`, `pset <hex>`, `hpd`, `daemon [hex]`. The source has a line on each.
+`vedid` subcommands: `info`, `edid`, `set <hex>`, `clear`, `devupd [n]`, `ports`, `pset <hex>`, `hpd`, `daemon <hex> [width] [rate]`. The source has a line on each.
+
+CI builds the tool and runs the tests on a macOS runner. It can't exercise the injection itself; that takes a monitor on a real Mac.
 
 ## Things that bit me
 

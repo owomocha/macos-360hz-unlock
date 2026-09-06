@@ -1,96 +1,86 @@
-"""360Hz が有効になっているかを 1 コマンドで確かめる。
+#!/usr/bin/env python3
+"""One-shot status: is the target mode in the DCP's usable table, and does CoreGraphics see it?
 
-実行: python3 check.py          （PyObjC の Quartz が要る: pip install pyobjc-framework-Quartz）
-      （--set を付けると 360Hz が在れば切り替えて実測まで行う）
+    check.py --rate 360 [--width 1920]      report only; exit 1 if the mode is not there
+    check.py --rate 360 --set               also switch to it and measure (runs setmode.py)
 
-通常は LaunchAgent (com.local.display360) が自動で 360Hz にする。
-✗ が出たら ./enable360.sh を叩けば手動で適用できる。
+Normally the LaunchAgent (com.local.display360) keeps the mode applied; if this
+says no, ./enable.sh applies it by hand.
+
+Needs PyObjC's Quartz: pip install pyobjc-framework-Quartz
 """
-import subprocess, sys, time
+import argparse
+import pathlib
+import re
+import subprocess
+import sys
+
 import Quartz
 
-SET = "--set" in sys.argv
+from setmode import matching, modes
 
-# 1) override が読まれているか（表示名で判定）
-sp = subprocess.run(["system_profiler", "SPDisplaysDataType"], capture_output=True, text=True).stdout
-override_read = "(360Hz)" in sp
-print(f"① EDID override が読まれている : {'はい' if override_read else 'いいえ'}"
-      f"  （表示名に (360Hz) が付くか）")
 
-# 2) DCP の使用可能タイミングに 360Hz が入ったか
-ioreg = subprocess.run(["ioreg", "-lw0"], capture_output=True, text=True).stdout
-import re
-usable_360 = False
-for m in re.finditer(r'"TimingElements" = \(', ioreg):
-    i = m.end() - 1; d = 0; j = i
-    while j < len(ioreg):
-        if ioreg[j] == "(": d += 1
-        elif ioreg[j] == ")":
-            d -= 1
-            if d == 0: break
-        j += 1
-    if '"SyncRate"=23592960' in ioreg[i:j]:      # 360*65536
-        usable_360 = True
-print(f"② DCP の使用可能表に 360Hz    : {'はい ★' if usable_360 else 'いいえ'}")
+def dcp_usable_table_has(rate):
+    """Scan ioreg for a TimingElements entry whose SyncRate is `rate` (1/65536 units)."""
+    ioreg = subprocess.run(["ioreg", "-lw0"], capture_output=True, text=True).stdout
+    key = f'"SyncRate"={int(round(rate * 65536))}'
+    for m in re.finditer(r'"TimingElements" = \(', ioreg):
+        i = m.end() - 1
+        depth, j = 0, i
+        while j < len(ioreg):
+            if ioreg[j] == "(":
+                depth += 1
+            elif ioreg[j] == ")":
+                depth -= 1
+                if depth == 0:
+                    break
+            j += 1
+        if key in ioreg[i:j]:
+            return True
+    return False
 
-# 3) CoreGraphics のモード一覧
-err, ids, cnt = Quartz.CGGetOnlineDisplayList(16, None, None)
-target = None
-for did in ids:
-    modes = Quartz.CGDisplayCopyAllDisplayModes(
-        did, {"kCGDisplayShowDuplicateLowResolutionModes": True}) or []
-    rates = sorted({round(Quartz.CGDisplayModeGetRefreshRate(m), 2) for m in modes}, reverse=True)
-    cur = Quartz.CGDisplayCopyDisplayMode(did)
-    w, h = Quartz.CGDisplayModeGetWidth(cur), Quartz.CGDisplayModeGetHeight(cur)
-    print(f"\ndisplay 0x{did:x}: 現在 {w}x{h} @{Quartz.CGDisplayModeGetRefreshRate(cur):.2f}Hz")
-    print(f"  選べるレート: {rates}")
-    for m in modes:
-        if (Quartz.CGDisplayModeGetRefreshRate(m) > 355
-                and Quartz.CGDisplayModeGetWidth(m) == 1920
-                and Quartz.CGDisplayModeIsUsableForDesktopGUI(m)):
-            target = (did, m)
 
-print("\n" + "=" * 62)
-if target is None:
-    print("判定: ✗ 360Hz モードが無い（仮想 EDID がまだ入っていない）。")
-    print("      → 手動適用: ./enable360.sh")
-    print("      → 常駐の稼働確認: launchctl print gui/$(id -u)/com.local.display360")
-    print("      → ログ: ./display360.log")
-    raise SystemExit(1)
+def main(argv=None):
+    p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    p.add_argument("--rate", type=float, required=True, help="refresh rate to look for (Hz)")
+    p.add_argument("--width", type=int, default=1920, help="mode width in points (default 1920)")
+    p.add_argument("--set", action="store_true", help="switch to the mode and measure if it exists")
+    a = p.parse_args(argv)
 
-did, m = target
-print(f"判定: ★ 360Hz モードが出現した！ "
-      f"{Quartz.CGDisplayModeGetWidth(m)}x{Quartz.CGDisplayModeGetHeight(m)} "
-      f"@{Quartz.CGDisplayModeGetRefreshRate(m):.3f}Hz (display 0x{did:x})")
-if not SET:
-    print("切り替えて実測するには: python3 check.py --set")
-    raise SystemExit(0)
+    print(f"[1] DCP usable table (TimingElements) has {a.rate:g} Hz : {'yes' if dcp_usable_table_has(a.rate) else 'no'}")
 
-cur = Quartz.CGDisplayCopyDisplayMode(did)
-err, cfg = Quartz.CGBeginDisplayConfiguration(None)
-Quartz.CGConfigureDisplayWithDisplayMode(cfg, did, m, None)
-rc = Quartz.CGCompleteDisplayConfiguration(cfg, 1)   # ForSession＝再起動で元に戻る安全側
-print(f"\n切替 rc={rc}")
-time.sleep(3)
+    err, ids, cnt = Quartz.CGGetOnlineDisplayList(16, None, None)
+    target = None
+    for did in ids:
+        ms = modes(did)
+        rates = sorted({round(Quartz.CGDisplayModeGetRefreshRate(m), 2) for m in ms}, reverse=True)
+        cur = Quartz.CGDisplayCopyDisplayMode(did)
+        builtin = bool(Quartz.CGDisplayIsBuiltin(did))
+        print(f"\n[2] display 0x{did:x}{' (built-in)' if builtin else ''}: now "
+              f"{Quartz.CGDisplayModeGetWidth(cur)}x{Quartz.CGDisplayModeGetHeight(cur)} "
+              f"@{Quartz.CGDisplayModeGetRefreshRate(cur):.2f} Hz")
+        print(f"    selectable rates: {rates}")
+        if not builtin:
+            c = matching(did, a.width, a.rate)
+            if c:
+                target = (did, c[-1])
 
-err, link = Quartz.CVDisplayLinkCreateWithCGDisplay(did, None)
-nom = Quartz.CVDisplayLinkGetNominalOutputVideoRefreshPeriod(link)
-ts = []
-def handler(dl, now, out, fin, fout):
-    ts.append(time.monotonic())
-    return (0, 0)
-Quartz.CVDisplayLinkSetOutputHandler(link, handler)
-Quartz.CVDisplayLinkStart(link)
-time.sleep(5)
-act = Quartz.CVDisplayLinkGetActualOutputVideoRefreshPeriod(link)
-Quartz.CVDisplayLinkStop(link)
-now = Quartz.CGDisplayCopyDisplayMode(did)
-print(f"  ① モード申告  : {Quartz.CGDisplayModeGetRefreshRate(now):.4f} Hz")
-if nom.timeValue:
-    print(f"  ② 公称周期    : {nom.timeScale/nom.timeValue:.4f} Hz")
-if len(ts) > 10:
-    span = ts[-1] - ts[0]
-    print(f"  ③ vsync 実計数: {(len(ts)-1)/span:.4f} Hz  ({len(ts)} 回 / {span:.3f}s) ← 実出力")
-print(f"  ④ CoreVideo実測: {1/act if act else 0:.4f} Hz")
-print("\nモニタの OSD でも入力リフレッシュレートを確認してください（これが最終的な地上検証）。")
-print("元に戻すには再起動するか、System Settings > ディスプレイ で 300Hz を選択。")
+    print("\n" + "=" * 62)
+    if target is None:
+        print(f"verdict: no {a.width}-wide {a.rate:g} Hz mode. The virtual EDID is not in (or was rejected).")
+        print("  apply now : ./enable.sh <edid.hex> <width> <rate>")
+        print("  agent     : launchctl print gui/$(id -u)/com.local.display360")
+        print("  log       : ./display360.log")
+        return 1
+    did, m = target
+    print(f"verdict: {Quartz.CGDisplayModeGetWidth(m)}x{Quartz.CGDisplayModeGetHeight(m)} "
+          f"@{Quartz.CGDisplayModeGetRefreshRate(m):.3f} Hz is selectable on display 0x{did:x}")
+    if not a.set:
+        print(f"  switch and measure: python3 setmode.py --width {a.width} --rate {a.rate:g} 0")
+        return 0
+    setmode = pathlib.Path(__file__).with_name("setmode.py")
+    return subprocess.call([sys.executable, str(setmode), "--width", str(a.width), "--rate", f"{a.rate:g}", "0"])
+
+
+if __name__ == "__main__":
+    sys.exit(main())
