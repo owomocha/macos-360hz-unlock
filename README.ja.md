@@ -12,6 +12,8 @@ vsync 実計数   : 359.9977 Hz   (5.000 秒で 1801 フレーム・CVDisplayLin
 フレーム間隔   : 中央値 2.7775 ms
 ```
 
+2026-09-09 に再測定。今度は汎用化したデーモンが接続時に注入したモードで、359.9923 Hz・5.003 秒で 1802 フレーム・中央値 2.7767 ms。
+
 環境は MacBook Pro 16" M2 Pro (Mac14,10)、macOS 26.5.2、Pixio PX259PS を USB-C（DP alt mode）で接続。非公開の `IOAVService*` / `IODP*` を叩き、パネルを規定よりわずかに速いタイミングで駆動する——8月末から問題なく使えているが、注意点は先に読んでほしい。
 
 360 固有の部分は無い。`build_edid.py` とデーモンは解像度とレートを引数で受け取り、モニタは EDID 内の製造者/製品 ID で照合するので、その EDID 用でないモニタには触らない。前提は、Apple Silicon（タイミング表を持つのが DCP なので）と DisplayPort 接続、タイミングを DisplayID Type I ブロックに持つモニタ（Type VII や CTA の DTD はまだ非対応）、そして macOS が下記のブランキング規則で蹴っているモードであること——リンクが物理的に運べないモードは EDID では直らない。検証はモニタ1台。それ以外はその1台での DCP の挙動からの外挿。
@@ -27,6 +29,11 @@ PX259PS の EDID には最初から 1920x1080 @ 360Hz が入っていて、DCP �
 | 受理側で最小 | **174.4 µs** | 0.224 µs | 713.86 MHz |
 | 純正 360Hz（却下） | **75.1 µs** | 0.170 µs | 823.17 MHz |
 | 純正 200Hz（却下） | **90.9 µs** | 0.182 µs | 440.00 MHz |
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/blanking-dark.svg">
+  <img alt="PX259PS のタイミングを垂直ブランキング時間×リフレッシュレートで散布した図。DCP が残した純正モードはすべて 155µs 以上、却下した純正 2 本は 75µs と 91µs、注入した 360Hz 候補 2 本は 155µs と 192µs で受理されている" src="docs/blanking.svg" width="720">
+</picture>
 
 受理されたモードは vblank 174µs 以上、蹴られた 2 本はそれよりずっと短い。純正 360Hz は DCP には詰めすぎ。そこで、ブロック 0 と 1 はバイト単位でそのまま、純正 300Hz も残し、ブランキングを太らせた 360Hz 候補を 4 本足した EDID を作った:
 
@@ -92,6 +99,6 @@ python3 check.py --rate 360                      # 360 が DCP の使用可能�
 
 ## ファイル
 
-`vedid.c` が本体——EDID の取得と注入、DP デバイス/ポート操作、ホットプラグ、常駐（サブコマンド `info edid set clear devupd ports pset hpd daemon`・ソース冒頭に一行ずつ説明）。Python 側は、`build_edid.py` が DisplayID Type I ブロックを書き換えて両チェックサムを計算し直し、`parse_edid.py` が全ブロック（base・CTA-861・DisplayID）を解読、`setmode.py` がモードの一覧/選択と vsync 実計数（`revert` で戻す）、`check.py` が 1 発の状態判定、`timings.py` が候補表と使用可能表の差分、`cgs_modes.py` が非公開 CGS API で隠しモードまで列挙。`enable.sh` は注入→再構築→切替→計測を繋ぎ、`install.sh` / `uninstall.sh` が LaunchAgent の導入と撤去。`tests/` は生成器が同梱 EDID をバイト単位で再現できることと境界のテスト（`make test`）。CI は macOS ランナーで回すが注入自体は試せない——実機とモニタが要る。
+`vedid.c` が本体——EDID の取得と注入、DP デバイス/ポート操作、ホットプラグ、常駐（サブコマンド `info edid set clear devupd ports pset hpd daemon`・ソース冒頭に一行ずつ説明）。Python 側は、`build_edid.py` が DisplayID Type I ブロックを書き換えて両チェックサムを計算し直し、`parse_edid.py` が全ブロック（base・CTA-861・DisplayID）を解読、`setmode.py` がモードの一覧/選択と vsync 実計数（`revert` で戻す）、`check.py` が 1 発の状態判定、`timings.py` が候補表と使用可能表の差分、`cgs_modes.py` が非公開 CGS API で隠しモードまで列挙。`enable.sh` は注入→再構築→切替→計測を繋ぎ、`install.sh` / `uninstall.sh` が LaunchAgent の導入と撤去。`tests/` は生成器が同梱 EDID をバイト単位で再現できること、DisplayID 解析の境界、`ioreg` 読み取りを取得済みダンプに対して回すテスト（`make test`）。`docs/` は上の図だけ。CI は macOS ランナーで回すが注入自体は試せない——実機とモニタが要る。
 
 MIT。

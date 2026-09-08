@@ -12,6 +12,8 @@ vsync counted   : 359.9977 Hz   (1801 frames in 5.000 s, CVDisplayLink callback)
 frame interval  : median 2.7775 ms
 ```
 
+Re-measured 2026-09-09, this time with the generic daemon doing the injection on a fresh connect: 359.9923 Hz, 1802 frames in 5.003 s, median 2.7767 ms.
+
 MacBook Pro 16" M2 Pro (Mac14,10), macOS 26.5.2, Pixio PX259PS over USB-C (DP alt mode). It pokes undocumented `IOAVService*` / `IODP*` and runs the panel a hair outside its stock timing — fine here since late August, but read the caveats first.
 
 Nothing is 360-specific. `build_edid.py` and the daemon take the resolution and rate as arguments and match the monitor by the manufacturer/product ID in its EDID, so they won't touch a display the EDID wasn't made for. Assumptions: Apple silicon (the DCP owns the timing table) over DisplayPort; a monitor that keeps its timings in a DisplayID Type I block (Type VII and CTA DTDs aren't handled yet); and a mode macOS drops for the blanking rule below, not one the link physically can't carry. Verified on exactly one monitor — the rest is extrapolation from how that one's DCP behaved.
@@ -27,6 +29,11 @@ So I dumped all 16 accepted timings and the 2 rejected ones and went looking for
 | smallest accepted timing | **174.4 µs** | 0.224 µs | 713.86 MHz |
 | native 360 Hz (rejected) | **75.1 µs** | 0.170 µs | 823.17 MHz |
 | native 200 Hz (rejected) | **90.9 µs** | 0.182 µs | 440.00 MHz |
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/blanking-dark.svg">
+  <img alt="Dot chart of the PX259PS timings: refresh rate against vertical blanking time. Every stock mode the DCP kept sits at 155 µs or more; the two native modes it rejected sit at 75 and 91 µs; the two injected 360 Hz candidates sit at 155 and 192 µs and are kept." src="docs/blanking.svg" width="720">
+</picture>
 
 Accepted modes sit above ~174 µs vblank; both rejects are well below. The stock 360 Hz timing is simply too tight for the DCP. So the generated EDID keeps blocks 0 and 1 byte-for-byte, keeps the 300 Hz entry, and adds four 360 Hz candidates with fatter blanking:
 
@@ -92,6 +99,6 @@ The virtual EDID doesn't survive a replug, so to keep it on:
 
 ## files
 
-`vedid.c` is the tool itself — EDID dump and injection, the DP device/port calls, hot-plug, and the daemon (subcommands `info edid set clear devupd ports pset hpd daemon`, one source line each). On the Python side, `build_edid.py` rewrites the DisplayID Type I block and recomputes both checksums, `parse_edid.py` decodes every block (base, CTA-861, DisplayID), `setmode.py` lists or selects a mode and counts real vsyncs (`revert` goes back), `check.py` is one-shot status, `timings.py` is the candidate-vs-usable diff, and `cgs_modes.py` lists hidden modes through the private CGS API. `enable.sh` chains inject→rebuild→switch→measure; `install.sh` / `uninstall.sh` toggle the LaunchAgent. `tests/` holds the generator's byte-for-byte reproduction of the shipped EDID plus the edge cases (`make test`); CI runs them on a macOS runner but can't exercise the injection — that needs a monitor on a real Mac.
+`vedid.c` is the tool itself — EDID dump and injection, the DP device/port calls, hot-plug, and the daemon (subcommands `info edid set clear devupd ports pset hpd daemon`, one source line each). On the Python side, `build_edid.py` rewrites the DisplayID Type I block and recomputes both checksums, `parse_edid.py` decodes every block (base, CTA-861, DisplayID), `setmode.py` lists or selects a mode and counts real vsyncs (`revert` goes back), `check.py` is one-shot status, `timings.py` is the candidate-vs-usable diff, and `cgs_modes.py` lists hidden modes through the private CGS API. `enable.sh` chains inject→rebuild→switch→measure; `install.sh` / `uninstall.sh` toggle the LaunchAgent. `tests/` holds the generator's byte-for-byte reproduction of the shipped EDID, the DisplayID parsing edge cases, and the `ioreg` readers run against captured dumps (`make test`); CI runs them on a macOS runner but can't exercise the injection — that needs a monitor on a real Mac. `docs/` is just the chart above.
 
 MIT.

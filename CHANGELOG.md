@@ -1,5 +1,18 @@
 # Changelog
 
+## v0.3.0 (2026-09-09)
+
+Re-measured on the real monitor with the generic daemon doing the injection on a fresh connect: 359.9923 Hz, 1802 frames in 5.003 s (until now v0.2 had only met the Dell, which it correctly ignored). The blanking rule is a chart in the README now.
+
+- `build_edid.py`: a DisplayID section that starts with a v1.x Product ID block (tag 0x00) no longer reads as "no Type I block"; the parser stops at zero padding, not at the first zero tag. The rewritten Type I block stays where the monitor put it, other blocks keep their order, and a second Type I block is preserved instead of dropped. Too many candidates now gets the size error rather than a `bytes` ValueError
+- `parse_edid.py`: no longer walks through the DisplayID section's zero padding and checksums (it printed dozens of `tag=0x00` lines); prints a checksum verdict per block, decodes bit depth / interface, the 0xFE text descriptor and the DisplayID 1.x / 2.x block names, and a CTA block with no DTDs (offset 0) is no longer read as one. Usage and a clean error instead of a traceback on a missing or odd file
+- `check.py`: the DCP table check reads only `VerticalAttributes` (the horizontal dict has a `SyncRate` too, in kHz) and compares within 1.5 Hz instead of exact 1/65536 units, so `--rate 359.99` matches the 360 Hz entry and a 295 kHz line rate does not match `--rate 295`. The verdict and `--set` now agree on which candidate they mean
+- `timings.py`: elements without `Score` / `UnsafeColorElementIDs` / `PreciseSyncRate` no longer crash it; says so when there are no `TimingElements` at all; bad `min_hz` prints usage
+- `cgs_modes.py`: the 1920x1080-or-200 Hz filter left over from the Pixio days is gone; takes `[min_hz]` like `timings.py` and sorts fastest first
+- `setmode.py`: a bad candidate index is an error message, not a traceback; survives `CGGetOnlineDisplayList` returning nothing
+- `enable.sh`: stops with `vedid set`'s own message when the injection fails instead of going on to a misleading "no such mode"
+- issue template for "my monitor's mode doesn't show up" asking for the EDID and the DCP tables; tests for `parse_edid.py`, `check.py`, `timings.py` and the DisplayID parsing
+
 ## v0.2.0 (2026-09-07)
 
 The tool stops being Pixio-only.
