@@ -11,11 +11,25 @@ STOCK = ROOT / "edid" / "pixio-px259ps.hex"
 SHIPPED = ROOT / "edid" / "pixio-px259ps-360.hex"
 
 
+def did_block(blocks, version=0x12, size=121):
+    """A 128-byte DisplayID extension block holding `blocks` = [(tag, rev, payload), ...]."""
+    body = b"".join(bytes([tag, rev, len(pl)]) + pl for tag, rev, pl in blocks)
+    assert len(body) <= size
+    blk = bytearray([0x70, version, size, 0, 0]) + body + b"\x00" * (size - len(body)) + b"\x00\x00"
+    blk[126] = (256 - sum(blk[1:5 + size]) % 256) % 256
+    blk[127] = (256 - sum(blk) % 256) % 256
+    return bytes(blk)
+
+
+def did_blocks(raw):
+    """Parsed data blocks of the first DisplayID extension in `raw`."""
+    didx = next(b for b in range(1, len(raw) // 128) if raw[b * 128] == 0x70)
+    return be.parse_did(bytearray(raw[didx * 128:(didx + 1) * 128]))[1]
+
+
 def type1_entries(raw):
     """Decoded Type I entries and their flag bytes from the first DisplayID block."""
-    didx = next(b for b in range(1, len(raw) // 128) if raw[b * 128] == 0x70)
-    size, blocks = be.parse_did(bytearray(raw[didx * 128:(didx + 1) * 128]))
-    payload = next(b for b in blocks if b[0] == 0x03)[2]
+    payload = next(b for b in did_blocks(raw) if b[0] == 0x03)[2]
     ks = range(0, len(payload) - len(payload) % 20, 20)
     return [be.type1_decode(payload[k:k + 20]) for k in ks], [payload[k + 3] for k in ks]
 
@@ -89,6 +103,46 @@ class BuildEdid(unittest.TestCase):
             be.build(self.raw, 360, blanking="200-80")
         with self.assertRaises(be.BuildError):
             be.build(self.raw[:200], 360)
+
+
+class DisplayIdSection(unittest.TestCase):
+    """Sections that look nothing like the Pixio's: other blocks around the timings."""
+
+    def setUp(self):
+        stock = be.load_hex(STOCK)
+        self.head = stock[:256]                                     # base + CTA, untouched by build()
+        self.entries = next(b for b in did_blocks(stock) if b[0] == 0x03)[2]   # its 300 and 360 Hz
+        self.product_id = (0x00, 0x00, bytes(range(12)))            # DisplayID 1.x Product ID, tag 0
+
+    def test_parse_did_stops_at_padding_not_at_a_zero_tag(self):
+        section = did_block([self.product_id, (0x03, 0x01, self.entries)])
+        size, blocks = be.parse_did(bytearray(section))
+        self.assertEqual([b[0] for b in blocks], [0x00, 0x03])
+        self.assertEqual(blocks[0][2], bytes(range(12)))
+
+    def test_leading_product_id_block_keeps_its_place(self):
+        raw = self.head + did_block([self.product_id, (0x03, 0x01, self.entries), (0x07, 0x00, b"\x08" * 10)])
+        out, rows, dropped, _ = be.build(raw, 360, blanking="200x80,160x64")   # 4 would not fit beside them
+        blocks = did_blocks(out)
+        self.assertEqual([b[0] for b in blocks], [0x00, 0x03, 0x07])
+        self.assertEqual(blocks[0], self.product_id)
+        self.assertEqual(blocks[2][2], b"\x08" * 10)
+        self.assertEqual(len(near(type1_entries(out)[0], 360)), 2)
+        self.assertEqual(len(dropped), 1)
+
+    def test_second_type_i_block_survives(self):
+        second = (0x03, 0x01, self.entries[:20])                    # another block with the 300 Hz entry
+        raw = self.head + did_block([(0x03, 0x01, self.entries), second])
+        out, *_ = be.build(raw, 360, blanking="200x80")
+        blocks = did_blocks(out)
+        self.assertEqual([b[0] for b in blocks], [0x03, 0x03])
+        self.assertEqual(blocks[1], second)
+
+    def test_too_many_candidates_is_the_size_error(self):
+        raw = self.head + did_block([(0x03, 0x01, self.entries)])
+        with self.assertRaises(be.BuildError) as cm:
+            be.build(raw, 360, blanking=",".join(["200x80"] * 13))
+        self.assertIn("holds 121 bytes", str(cm.exception))
 
 
 class Cli(unittest.TestCase):

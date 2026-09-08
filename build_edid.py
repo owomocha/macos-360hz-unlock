@@ -58,11 +58,13 @@ def type1_decode(e):
 
 
 def parse_did(did):
-    """DisplayID section -> (size, [(tag, rev, payload), ...])."""
+    """DisplayID section -> (size, [(tag, rev, payload), ...]), stopping at the zero padding."""
     size = did[2]
     out, i, end = [], 5, 5 + size
-    while i < end and did[i] != 0:
+    while i + 3 <= end:
         tag, rev, ln = did[i], did[i + 1], did[i + 2]
+        if tag == 0 and ln == 0:       # padding; a v1.x Product ID block is tag 0 too, but has a length
+            break
         out.append((tag, rev, bytes(did[i + 3:i + 3 + ln])))
         i += 3 + ln
     return size, out
@@ -91,11 +93,10 @@ def build(raw, rate, width=1920, height=1080, blanking=DEFAULT_BLANKING, sync=DE
                          "so far. Open an issue with your EDID if yours lives in a Type VII block or a CTA DTD.")
     did = bytearray(raw[didx * 128:(didx + 1) * 128])
     size, blocks = parse_did(did)
-    t1s = [b for b in blocks if b[0] == 0x03]
-    if not t1s:
+    t1i = next((n for n, b in enumerate(blocks) if b[0] == 0x03), None)
+    if t1i is None:
         raise BuildError("the DisplayID block has no Type I timing data block (tag 0x03)")
-    t1 = t1s[0]
-    others = [b for b in blocks if b[0] != 0x03]
+    t1 = blocks[t1i]
 
     keep, dropped = b"", []
     payload = t1[2]
@@ -128,13 +129,12 @@ def build(raw, rate, width=1920, height=1080, blanking=DEFAULT_BLANKING, sync=DE
             raise BuildError(f"candidate {row['name']}: pixel clock {pclk/1e6:.2f} MHz is above the {cap} MHz "
                              f"this EDID declares as its maximum (--force to override)")
 
-    body = keep + new
-    newblocks = bytes([0x03, t1[1], len(body)]) + body
-    for tag, rev, pl in others:
-        newblocks += bytes([tag, rev, len(pl)]) + pl
-    if len(newblocks) > size:
-        raise BuildError(f"the DisplayID section holds {size} bytes and the timings need {len(newblocks)}; "
+    blocks[t1i] = (0x03, t1[1], keep + new)            # in place, so the other blocks keep their order
+    need = sum(3 + len(pl) for _, _, pl in blocks)
+    if need > size:
+        raise BuildError(f"the DisplayID section holds {size} bytes and the timings need {need}; "
                          f"use fewer candidates (--blanking)")
+    newblocks = b"".join(bytes([tag, rev, len(pl)]) + pl for tag, rev, pl in blocks)
     did[5:5 + size] = newblocks + b"\x00" * (size - len(newblocks))
     did[126] = 0
     did[126] = (256 - sum(did[1:5 + size]) % 256) % 256        # DisplayID section checksum
