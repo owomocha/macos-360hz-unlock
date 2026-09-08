@@ -34,7 +34,7 @@ def matching(did, width, rate, pixel_exact=False):
 
 def find_display(width, rate, pixel_exact=False):
     err, ids, cnt = Quartz.CGGetOnlineDisplayList(16, None, None)
-    for d in ids:
+    for d in ids or []:
         if Quartz.CGDisplayIsBuiltin(d):
             continue
         c = matching(d, width, rate, pixel_exact)
@@ -92,6 +92,7 @@ def main(argv=None):
     a = p.parse_args(argv)
 
     revert = a.what == "revert"
+    # revert picks blindly, so insist on the 1:1 mode rather than a scaled duplicate of it
     did, cands = find_display(a.width, a.rate, pixel_exact=revert)
     if did is None:
         print(f"no external display has a {a.width}-wide mode at {a.rate:g} Hz")
@@ -109,7 +110,11 @@ def main(argv=None):
         print(f"\nto switch and measure: setmode.py --width {a.width} --rate {a.rate:g} <index>")
         return 0
 
-    m = cands[int(a.what)]
+    try:
+        m = cands[int(a.what)]
+    except (ValueError, IndexError):
+        print(f"candidate must be an index 0..{len(cands) - 1}, not {a.what!r}", file=sys.stderr)
+        return 2
     rc = switch(did, m)
     print(f"\nswitch rc={rc}")
     time.sleep(3)

@@ -13,7 +13,8 @@ PY=${PYTHON:-python3}
   echo "need a Python with PyObjC Quartz: pip install pyobjc-framework-Quartz (or set PYTHON=...)" >&2; exit 1; }
 [ -f "$EDID" ] || { echo "EDID file not found: $EDID (build one with build_edid.py)" >&2; exit 1; }
 [ -x ./vedid ] || make
-./vedid set "$EDID" | tail -1
-./vedid devupd 1    | tail -1
+out=$(./vedid set "$EDID") || { printf '%s\n' "$out" >&2; exit 1; }   # stop here if the DCP refused it
+printf '%s\n' "$out" | tail -1
+./vedid devupd 1 | tail -1
 sleep 2
 "$PY" setmode.py --width "$WIDTH" --rate "$RATE" 0
