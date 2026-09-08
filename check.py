@@ -17,13 +17,18 @@ import sys
 
 import Quartz
 
-from setmode import matching, modes
+from setmode import TOLERANCE_HZ, matching, modes
 
 
-def dcp_usable_table_has(rate):
-    """Scan ioreg for a TimingElements entry whose SyncRate is `rate` (1/65536 units)."""
-    ioreg = subprocess.run(["ioreg", "-lw0"], capture_output=True, text=True).stdout
-    key = f'"SyncRate"={int(round(rate * 65536))}'
+def dcp_usable_table_has(rate, ioreg=None):
+    """Is there a TimingElements entry within TOLERANCE_HZ of `rate`?
+
+    SyncRate is 1/65536 Hz rounded to 0.5 Hz steps, so it is compared with a tolerance,
+    not for equality. Only the VerticalAttributes value counts: HorizontalAttributes has
+    a SyncRate too, the line rate in kHz, and a 295 kHz line rate is not a 295 Hz mode.
+    """
+    if ioreg is None:
+        ioreg = subprocess.run(["ioreg", "-lw0"], capture_output=True, text=True).stdout
     for m in re.finditer(r'"TimingElements" = \(', ioreg):
         i = m.end() - 1
         depth, j = 0, i
@@ -35,8 +40,9 @@ def dcp_usable_table_has(rate):
                 if depth == 0:
                     break
             j += 1
-        if key in ioreg[i:j]:
-            return True
+        for v in re.findall(r'"VerticalAttributes"=\{[^{}]*"SyncRate"=(\d+)', ioreg[i:j]):
+            if abs(int(v) / 65536 - rate) < TOLERANCE_HZ:
+                return True
     return False
 
 
@@ -51,7 +57,7 @@ def main(argv=None):
 
     err, ids, cnt = Quartz.CGGetOnlineDisplayList(16, None, None)
     target = None
-    for did in ids:
+    for did in ids or []:
         ms = modes(did)
         rates = sorted({round(Quartz.CGDisplayModeGetRefreshRate(m), 2) for m in ms}, reverse=True)
         cur = Quartz.CGDisplayCopyDisplayMode(did)
@@ -63,7 +69,7 @@ def main(argv=None):
         if not builtin:
             c = matching(did, a.width, a.rate)
             if c:
-                target = (did, c[-1])
+                target = (did, c[0])                   # the one `--set` (setmode.py ... 0) switches to
 
     print("\n" + "=" * 62)
     if target is None:
