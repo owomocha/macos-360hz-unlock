@@ -14,9 +14,6 @@ import re
 import subprocess
 import sys
 
-MINHZ = float(sys.argv[1]) if len(sys.argv) > 1 else 100.0
-io = subprocess.run(["ioreg", "-lw0"], capture_output=True, text=True).stdout
-
 
 def span(s, i, o, c):
     d = 0
@@ -30,7 +27,8 @@ def span(s, i, o, c):
     return -1
 
 
-def collect(key):
+def collect(io, key):
+    """{registry node id: [element text, ...]} for every `key` = ( ... ) array in the ioreg dump."""
     res = {}
     for m in re.finditer(r'"%s" = \(' % key, io):
         i = m.end() - 1
@@ -51,39 +49,67 @@ def collect(key):
 
 def axis(e, name):
     m = re.search(r'"%sAttributes"=\{([^{}]*)\}' % name, e)
-    return {k: int(v) for k, v in re.findall(r'"(\w+)"=(-?\d+)', m.group(1))}
+    return {k: int(v) for k, v in re.findall(r'"(\w+)"=(-?\d+)', m.group(1))} if m else None
 
 
 def rate(d):
-    return (d["PreciseSyncRate"] or d["SyncRate"]) / 65536.0
+    return (d.get("PreciseSyncRate") or d["SyncRate"]) / 65536.0
 
 
 def row(e):
+    """One timing element as numbers, or None if it has no H/V attributes."""
     h, v = axis(e, "Horizontal"), axis(e, "Vertical")
+    if not h or not v:
+        return None
     hk = rate(h)                                       # horizontal frequency, kHz
+    score = re.search(r'"Score"=(\d+)', e)
+    unsafe = re.search(r'"UnsafeColorElementIDs"=\(([^)]*)\)', e)
     return dict(vr=rate(v), w=h["Active"], ht=h["Total"], hk=hk,
                 hh=v["Active"], vt=v["Total"],
                 hb=h["Total"] - h["Active"], vb=v["Total"] - v["Active"],
                 pclk=h["Total"] * hk / 1000.0,          # MHz
-                score=int(re.search(r'"Score"=(\d+)', e).group(1)),
-                unsafe=re.search(r'"UnsafeColorElementIDs"=\(([^)]*)\)', e).group(1))
+                score=int(score.group(1)) if score else -1,
+                unsafe=unsafe.group(1) if unsafe else "")
 
 
-TE, PE = collect("TimingElements"), collect("PreferredTimingElements")
-for nid in TE:
-    print(f"##### node {nid}   usable={len(TE[nid])}  candidates={len(PE.get(nid, []))}")
-    usable = {(r["ht"], r["vt"], round(r["vr"], 1)) for r in map(row, TE[nid])}
-    for label, elems in (("candidates (PreferredTimingElements)", PE.get(nid, [])),
-                         ("usable (TimingElements)", TE[nid])):
-        print(f"  --- {label}  (>= {MINHZ:g} Hz)")
-        for r in sorted(map(row, elems), key=lambda r: -r["vr"]):
-            if r["vr"] < MINHZ:
-                continue
-            mark = ""
-            if label.startswith("candidates"):
-                mark = "  [usable]" if (r["ht"], r["vt"], round(r["vr"], 1)) in usable else "  [dropped]"
-            print(f"    {r['vr']:8.3f}Hz {r['w']}x{r['hh']} htot={r['ht']} vtot={r['vt']}"
-                  f" hblank={r['hb']} vblank={r['vb']} H={r['hk']:.1f}kHz"
-                  f" pclk={r['pclk']:.2f}MHz score={r['score']}"
-                  f" unsafe=[{r['unsafe']}]{mark}")
-    print()
+def rows(elems):
+    return [r for r in map(row, elems) if r]
+
+
+def report(io, minhz=100.0, out=sys.stdout):
+    te, pe = collect(io, "TimingElements"), collect(io, "PreferredTimingElements")
+    for nid in te:
+        print(f"##### node {nid}   usable={len(te[nid])}  candidates={len(pe.get(nid, []))}", file=out)
+        usable = {(r["ht"], r["vt"], round(r["vr"], 1)) for r in rows(te[nid])}
+        for label, elems in (("candidates (PreferredTimingElements)", pe.get(nid, [])),
+                             ("usable (TimingElements)", te[nid])):
+            print(f"  --- {label}  (>= {minhz:g} Hz)", file=out)
+            for r in sorted(rows(elems), key=lambda r: -r["vr"]):
+                if r["vr"] < minhz:
+                    continue
+                mark = ""
+                if label.startswith("candidates"):
+                    mark = "  [usable]" if (r["ht"], r["vt"], round(r["vr"], 1)) in usable else "  [dropped]"
+                print(f"    {r['vr']:8.3f}Hz {r['w']}x{r['hh']} htot={r['ht']} vtot={r['vt']}"
+                      f" hblank={r['hb']} vblank={r['vb']} H={r['hk']:.1f}kHz"
+                      f" pclk={r['pclk']:.2f}MHz score={r['score']}"
+                      f" unsafe=[{r['unsafe']}]{mark}", file=out)
+        print(file=out)
+    if not te:
+        print("no TimingElements in the registry: is an external display connected?", file=out)
+    return 0 if te else 1
+
+
+def main(argv=None):
+    argv = sys.argv[1:] if argv is None else argv
+    try:
+        minhz = float(argv[0]) if argv else 100.0
+    except ValueError:
+        print(__doc__.strip(), file=sys.stderr)
+        return 2
+    io = subprocess.run(["ioreg", "-lw0"], capture_output=True, text=True).stdout
+    return report(io, minhz)
+
+
+if __name__ == "__main__":
+    sys.exit(main())
