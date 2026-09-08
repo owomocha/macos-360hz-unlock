@@ -1,6 +1,6 @@
-# display360
+# macos-360hz-unlock
 
-[日本語](README.ja.md) · [![ci](https://github.com/owomocha/display360/actions/workflows/ci.yml/badge.svg)](https://github.com/owomocha/display360/actions)
+[日本語](README.ja.md) · [![ci](https://github.com/owomocha/macos-360hz-unlock/actions/workflows/ci.yml/badge.svg)](https://github.com/owomocha/macos-360hz-unlock/actions)
 
 My monitor does 360 Hz. macOS insisted on 300. This is how I got the last 60 Hz back without buying anything: hand the Mac a slightly edited EDID through a couple of private IOKit calls and make its display coprocessor rebuild the timing table it had thrown that mode out of. You give the tool your EDID and a target rate; a small LaunchAgent redoes it on every reconnect.
 
@@ -73,7 +73,7 @@ The first alone looks like it worked and does nothing: `IOAVServiceCopyEDID` ret
 Apple silicon, Xcode CLT (`clang`, `make`), and Python 3 with PyObjC Quartz for the switch/measure scripts (`pip install pyobjc-framework-Quartz`); the generator and parser are plain Python.
 
 ```sh
-git clone https://github.com/owomocha/display360 && cd display360
+git clone https://github.com/owomocha/macos-360hz-unlock && cd macos-360hz-unlock
 make
 ./vedid edid > edid/mine.hex                    # your stock EDID as one hex line (read-only)
 python3 parse_edid.py edid/mine.hex             # what it advertises, and where the timing lives

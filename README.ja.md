@@ -1,6 +1,6 @@
-# display360
+# macos-360hz-unlock
 
-[English](README.md) · [![ci](https://github.com/owomocha/display360/actions/workflows/ci.yml/badge.svg)](https://github.com/owomocha/display360/actions)
+[English](README.md) · [![ci](https://github.com/owomocha/macos-360hz-unlock/actions/workflows/ci.yml/badge.svg)](https://github.com/owomocha/macos-360hz-unlock/actions)
 
 手持ちのモニタは 360Hz 対応。なのに macOS は 300Hz までしか出さない。残りの 60Hz を何も買わずに取り返した方法がこれ: 少し書き換えた EDID を非公開の IOKit API 経由でディスプレイ用コプロセッサ（DCP）に渡し、そのモードを捨てていたタイミング表を作り直させる。EDID と目当てのレートを渡すだけで、抜き差しのたびに小さな常駐エージェントが入れ直す。
 
@@ -73,7 +73,7 @@ IODPDeviceSetUpdated(dp, 1);                  // 再パースしてタイミン�
 Apple Silicon、Xcode Command Line Tools（`clang`・`make`）、切替と計測のスクリプト用に PyObjC の Quartz を入れた Python 3（`pip install pyobjc-framework-Quartz`）。生成器と解析器は素の Python で動く。
 
 ```sh
-git clone https://github.com/owomocha/display360 && cd display360
+git clone https://github.com/owomocha/macos-360hz-unlock && cd macos-360hz-unlock
 make
 ./vedid edid > edid/mine.hex                    # モニタの純正 EDID を 1 行 hex で（読み取り専用）
 python3 parse_edid.py edid/mine.hex             # 何が申告され、目当てのタイミングがどこにあるか
